@@ -4,19 +4,21 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "ts-node server.ts & next dev -H 0.0.0.0",
-    "build": "next build",
+    "dev": "concurrently \"tsx server.ts\" \"next dev\"",
+    "dev:mobile": "concurrently \"tsx server.ts\" \"next dev -H 0.0.0.0\"",
     "start": "next start",
     "lint": "eslint"
   },
   "dependencies": {
+    "@monaco-editor/react": "^4.7.0",
     "bcrypt": "^6.0.0",
+    "concurrently": "^9.2.1",
     "dockerode": "^4.0.9",
+    "ioredis": "^5.8.2",
     "jsonwebtoken": "^9.0.2",
     "next": "16.0.0",
     "react": "19.2.0",
     "react-dom": "19.2.0",
-    "redis": "^5.9.0",
     "socket.io": "^4.8.1",
     "socket.io-client": "^4.8.1"
   },
