@@ -1,0 +1,61 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  checks:
+    name: Lint, typecheck, unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm test
+
+  integration:
+    name: Build + end-to-end match flow
+    needs: checks
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: codefighter
+          POSTGRES_PASSWORD: codefighter
+          POSTGRES_DB: codefighter
+        ports: ["5433:5432"]
+        options: --health-cmd "pg_isready -U codefighter" --health-interval 5s --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports: ["6380:6379"]
+        options: --health-cmd "redis-cli ping" --health-interval 5s --health-retries 10
+    env:
+      JWT_SECRET: ci-only-secret-not-used-anywhere-else-0123456789
+      DATABASE_URL: postgres://codefighter:codefighter@localhost:5433/codefighter
+      REDIS_URL: redis://localhost:6380
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run db:migrate
+      - run: npm run build
+      - name: Start server
+        run: |
+          npm start > server.log 2>&1 &
+          for i in $(seq 1 60); do curl -sf localhost:3000/api/health && exit 0; sleep 1; done
+          cat server.log; exit 1
+      - run: npm run test:integration
+      - name: Server log
+        if: failure()
+        run: cat server.log
