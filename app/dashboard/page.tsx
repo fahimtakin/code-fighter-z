@@ -1,170 +1,152 @@
-'use client';
+import { redirect } from 'next/navigation';
+import { Logo } from '@/components/logo';
+import { MatchFinder } from '@/components/dashboard/match-finder';
+import { SignOutButton } from '@/components/dashboard/sign-out-button';
+import { getServerSession } from '@/lib/auth/server-session';
+import { getActiveMatchId } from '@/lib/match/matchmaking';
+import type { LeaderboardEntry, MatchHistoryEntry } from '@/lib/shared/types';
+import { getLeaderboard, getMatchHistory, getProfile } from '@/lib/users';
 
-import { useState, useEffect, useRef } from 'react';
-import { useRouter } from 'next/navigation';
+export const metadata = { title: 'Dashboard' };
 
-interface LeaderboardEntry {
-  user: string;
-  wins: number;
-}
+/**
+ * A Server Component: the data is loaded on the server straight from the
+ * database, so the page arrives complete with no loading spinners. Only the
+ * interactive part (MatchFinder) ships JavaScript to the browser.
+ */
+export default async function DashboardPage({ searchParams }: { searchParams: Promise<{ queue?: string }> }) {
+  const session = await getServerSession();
+  if (!session) redirect('/auth');
 
-export default function Dashboard() {
-  const [username, setUsername] = useState('');
-  const [status, setStatus] = useState<'idle' | 'searching'>('idle');
-  const [leaderboard, setLeaderboard] = useState<LeaderboardEntry[]>([]);
-  const pollInterval = useRef<NodeJS.Timeout | null>(null);
-  const router = useRouter();
+  const [profile, leaderboard, history, activeMatchId, params] = await Promise.all([
+    getProfile(session.userId),
+    getLeaderboard(),
+    getMatchHistory(session.userId),
+    getActiveMatchId(session.userId),
+    searchParams,
+  ]);
+  // A valid token for an account that no longer exists (e.g. the DB was reset).
+  if (!profile) redirect('/auth');
 
-  // Load profile identity contexts and sync historical leader grids
-  useEffect(() => {
-    const user = localStorage.getItem('username');
-    if (user) setUsername(user);
-
-    fetchLeaderboard();
-
-    // Pull user out of matching pool queues on initial mount to clear old state traces
-    fetch('/api/queue', { method: 'DELETE' }).catch(console.error);
-
-    return () => {
-      if (pollInterval.current) clearInterval(pollInterval.current);
-    };
-  }, []);
-
-  const fetchLeaderboard = async () => {
-    try {
-      const res = await fetch('/api/leaderboard');
-      if (res.ok) {
-        const data = await res.json();
-        setLeaderboard(data);
-      }
-    } catch (err) {
-      console.error('Failed retrieving global leaderboard datasets:', err);
-    }
-  };
-
-  const joinQueue = async () => {
-    if (status === 'searching') return;
-    setStatus('searching');
-
-    if (pollInterval.current) clearInterval(pollInterval.current);
-
-    const poll = async () => {
-      try {
-        const res = await fetch('/api/queue', { method: 'POST' });
-        
-        if (res.status === 401) {
-          router.push('/auth');
-          return;
-        }
-
-        const data = await res.json();
-
-        if (data.status === 'matched' && data.roomId) {
-          if (pollInterval.current) clearInterval(pollInterval.current);
-          router.push(`/match/${data.roomId}`);
-        }
-      } catch (err) {
-        console.error('Matchmaking submission transaction failure:', err);
-      }
-    };
-
-    await poll();
-    pollInterval.current = setInterval(poll, 1000);
-  };
-
-  const leaveQueue = async () => {
-    if (pollInterval.current) clearInterval(pollInterval.current);
-    await fetch('/api/queue', { method: 'DELETE' });
-    setStatus('idle');
-  };
-
-  const handleSignout = async () => {
-    if (pollInterval.current) clearInterval(pollInterval.current);
-    try {
-      await fetch('/api/auth/signout', { method: 'POST' });
-      localStorage.clear();
-      router.push('/auth');
-      router.refresh();
-    } catch (err) {
-      console.error('Failed processing signout transaction loop:', err);
-    }
-  };
+  const played = profile.wins + profile.losses + profile.draws;
+  const winRate = played ? Math.round((profile.wins / played) * 100) : 0;
 
   return (
-    <div className="min-h-screen bg-black text-white flex flex-col items-center justify-between p-8 select-none relative">
-      {/* Absolute Utility Sign Out Position anchor */}
-      <button 
-        onClick={handleSignout}
-        className="absolute top-8 right-8 px-5 py-2.5 text-sm font-bold bg-zinc-900 hover:bg-zinc-800 text-zinc-400 hover:text-white border border-zinc-800 rounded-xl transition-all"
-      >
-        Sign Out
-      </button>
-
-      {/* Main Interactive Arena Frame Column */}
-      <div className="flex-1 flex flex-col items-center justify-center my-12 text-center">
-        <h1 className="text-8xl font-black mb-4 text-red-600 tracking-tighter">
-          CODE FIGHTER Z
-        </h1>
-
-        <p className="text-3xl mb-12 text-zinc-400">
-          Welcome, <span className="text-yellow-400 font-black">{username || 'Warrior'}</span>
-        </p>
-
-        {status === 'idle' ? (
-          <button
-            onClick={joinQueue}
-            className="px-24 py-12 text-5xl font-black bg-gradient-to-r from-red-600 to-red-800 
-                     hover:from-red-500 hover:to-red-700 rounded-3xl shadow-2xl 
-                     transform hover:scale-102 transition duration-200 
-                     border-4 border-red-900 tracking-tight"
-          >
-            ENTER ARENA
-          </button>
-        ) : (
-          <div className="space-y-8 bg-zinc-950 p-12 rounded-3xl border border-zinc-900 max-w-md">
-            <p className="text-3xl font-bold animate-pulse text-red-500 tracking-tight">ENGAGING MATCHMAKING POOL...</p>
-            
-            <div className="flex justify-center gap-4 py-2">
-              <div className="w-4 h-4 bg-red-600 rounded-full animate-bounce [animation-delay:-0.3s]"></div>
-              <div className="w-4 h-4 bg-red-600 rounded-full animate-bounce [animation-delay:-0.15s]"></div>
-              <div className="w-4 h-4 bg-red-600 rounded-full animate-bounce"></div>
-            </div>
-
-            <button
-              onClick={leaveQueue}
-              className="px-8 py-3 text-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-zinc-400 hover:text-white rounded-xl font-bold transition-colors"
-            >
-              Cancel Search
-            </button>
+    <div className="min-h-screen">
+      <header className="border-b border-zinc-900">
+        <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-4">
+          <Logo href="/dashboard" />
+          <div className="flex items-center gap-4">
+            <span className="text-sm text-zinc-400">
+              <span className="font-semibold text-yellow-400">{profile.username}</span>
+              <span className="ml-2 font-mono text-zinc-500">{profile.rating}</span>
+            </span>
+            <SignOutButton />
           </div>
-        )}
-      </div>
+        </div>
+      </header>
 
-      {/* Global Leaderboard Standings Grid Layout Wrapper */}
-      <div className="w-full max-w-xl bg-zinc-950 border border-zinc-900 rounded-2xl p-6 shadow-xl mb-4">
-        <h2 className="text-xl font-black text-zinc-300 uppercase tracking-wider mb-4 border-b border-zinc-900 pb-3">
-          Arena Leaderboard Standings
-        </h2>
-        {leaderboard.length === 0 ? (
-          <p className="text-sm text-zinc-600 font-mono py-4 text-center">No historical logs recorded in current database index.</p>
-        ) : (
-          <div className="divide-y divide-zinc-900 max-h-48 overflow-y-auto pr-2 font-mono">
-            {leaderboard.map((entry, index) => (
-              <div key={entry.user} className="flex items-center justify-between py-3 text-sm">
-                <div className="flex items-center gap-3">
-                  <span className={`font-bold w-6 ${index === 0 ? 'text-yellow-400' : index === 1 ? 'text-zinc-400' : index === 2 ? 'text-amber-600' : 'text-zinc-600'}`}>
-                    #{index + 1}
-                  </span>
-                  <span className={entry.user === username ? 'text-yellow-400 font-bold' : 'text-zinc-300'}>
-                    {entry.user}
-                  </span>
-                </div>
-                <span className="text-zinc-400 font-bold">{entry.wins} wins</span>
-              </div>
-            ))}
+      <main className="mx-auto grid max-w-6xl gap-6 px-6 py-8 lg:grid-cols-3">
+        <div className="space-y-6 lg:col-span-2">
+          <MatchFinder activeMatchId={activeMatchId} autoStart={params.queue === '1'} />
+
+          <div className="grid grid-cols-3 gap-4">
+            <Stat label="Rating" value={profile.rating} accent />
+            <Stat label="W / L / D" value={`${profile.wins} / ${profile.losses} / ${profile.draws}`} />
+            <Stat label="Win rate" value={played ? `${winRate}%` : '—'} />
           </div>
-        )}
-      </div>
+
+          <History entries={history} />
+        </div>
+
+        <Leaderboard entries={leaderboard} me={profile.username} />
+      </main>
     </div>
+  );
+}
+
+function Stat({ label, value, accent }: { label: string; value: string | number; accent?: boolean }) {
+  return (
+    <div className="rounded-2xl border border-zinc-800 bg-zinc-900/40 p-4">
+      <p className="text-xs font-semibold uppercase tracking-wider text-zinc-500">{label}</p>
+      <p className={`mt-1 font-mono text-2xl font-bold ${accent ? 'text-yellow-400' : ''}`}>{value}</p>
+    </div>
+  );
+}
+
+const outcomeLabel: Record<MatchHistoryEntry['outcome'], string> = {
+  solved: 'solved',
+  timeout: 'on time',
+  forfeit: 'forfeit',
+  draw: 'draw',
+};
+
+function History({ entries }: { entries: MatchHistoryEntry[] }) {
+  return (
+    <section className="rounded-2xl border border-zinc-800 bg-zinc-900/40">
+      <h2 className="border-b border-zinc-800 px-5 py-3 text-sm font-bold uppercase tracking-wider text-zinc-400">
+        Recent matches
+      </h2>
+      {entries.length === 0 ? (
+        <p className="px-5 py-8 text-center text-sm text-zinc-500">No matches yet. Your history shows up here.</p>
+      ) : (
+        <ul className="divide-y divide-zinc-800/70">
+          {entries.map((m) => (
+            <li key={m.id} className="flex items-center justify-between gap-4 px-5 py-3 text-sm">
+              <div className="min-w-0">
+                <p className="truncate font-semibold">
+                  vs {m.opponent} <span className="font-normal text-zinc-500">· {m.problemTitle}</span>
+                </p>
+                <p className="text-xs text-zinc-500">
+                  {new Date(m.endedAt).toLocaleString()} · {outcomeLabel[m.outcome]}
+                </p>
+              </div>
+              <div className="flex shrink-0 items-center gap-3">
+                <span
+                  className={`rounded-md px-2 py-0.5 text-xs font-bold uppercase ${
+                    m.result === 'win'
+                      ? 'bg-emerald-950 text-emerald-400'
+                      : m.result === 'loss'
+                        ? 'bg-red-950 text-red-400'
+                        : 'bg-zinc-800 text-zinc-300'
+                  }`}
+                >
+                  {m.result}
+                </span>
+                <span className={`w-12 text-right font-mono ${m.ratingDelta >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                  {m.ratingDelta >= 0 ? '+' : ''}
+                  {m.ratingDelta}
+                </span>
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
+  );
+}
+
+function Leaderboard({ entries, me }: { entries: LeaderboardEntry[]; me: string }) {
+  return (
+    <section className="h-fit rounded-2xl border border-zinc-800 bg-zinc-900/40">
+      <h2 className="border-b border-zinc-800 px-5 py-3 text-sm font-bold uppercase tracking-wider text-zinc-400">
+        Leaderboard
+      </h2>
+      <ol className="divide-y divide-zinc-800/70">
+        {entries.map((e, i) => (
+          <li key={e.username} className="flex items-center justify-between px-5 py-2.5 text-sm">
+            <span className="flex items-center gap-3">
+              <span
+                className={`w-6 font-mono ${i === 0 ? 'text-yellow-400' : i === 1 ? 'text-zinc-300' : i === 2 ? 'text-amber-600' : 'text-zinc-600'}`}
+              >
+                {i + 1}
+              </span>
+              <span className={e.username === me ? 'font-bold text-yellow-400' : 'text-zinc-200'}>{e.username}</span>
+            </span>
+            <span className="font-mono text-zinc-400">{e.rating}</span>
+          </li>
+        ))}
+      </ol>
+    </section>
   );
 }
