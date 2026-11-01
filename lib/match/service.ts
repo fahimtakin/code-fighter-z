@@ -1,17 +1,17 @@
-import { and, eq, inArray, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, or, sql } from 'drizzle-orm';
 import { db } from '../db';
 import { matches, submissions, users } from '../db/schema';
 import { ratingDeltas } from '../elo';
 import { HttpError } from '../errors';
 import { judge, type JudgeCase } from '../judge';
 import { logger } from '../logger';
-import { getProblem, randomProblem, toPublicProblem } from '../problems';
+import { getProblem, problems, toPublicProblem } from '../problems';
 import { rateLimit } from '../rate-limit';
 import { redis } from '../redis';
 import type { MatchOutcome, MatchResult, MatchView, PlayerView, Progress, SubmitResponse } from '../shared/types';
 import { emitter } from './events';
 import { keys, rooms } from './keys';
-import { decideByProgress, MATCH_DURATION_MS } from './rules';
+import { chooseProblemId, decideByProgress, MATCH_DURATION_MS } from './rules';
 import { scriptedRedis } from './scripts';
 
 /**
@@ -152,7 +152,7 @@ export async function createMatch(matchId: string, playerIds: [string, string]):
   if (rows.length !== 2) throw new Error(`createMatch: players not found (${playerIds.join(', ')})`);
   const players = playerIds.map((id) => rows.find((r) => r.id === id)!) as [PlayerView, PlayerView];
 
-  const problem = randomProblem();
+  const problem = getProblem(await pickFreshProblemId(playerIds));
   const startedAt = Date.now();
   const endsAt = startedAt + MATCH_DURATION_MS;
 
@@ -173,6 +173,20 @@ export async function createMatch(matchId: string, playerIds: [string, string]):
 
   emitter().to(rooms.user(players[0].id)).to(rooms.user(players[1].id)).emit('match:found', { matchId });
   logger.info({ matchId, problemId: problem.id, players: playerIds }, 'match created');
+}
+
+async function pickFreshProblemId(playerIds: [string, string]): Promise<string> {
+  const playedBy = (id: string) => or(eq(matches.player1Id, id), eq(matches.player2Id, id));
+  const recent = await db()
+    .select({ problemId: matches.problemId, startedAt: matches.startedAt })
+    .from(matches)
+    .where(or(playedBy(playerIds[0]), playedBy(playerIds[1])))
+    .orderBy(desc(matches.startedAt))
+    .limit(problems.length * 2);
+  return chooseProblemId(
+    problems.map((p) => p.id),
+    recent,
+  );
 }
 
 /** Returns null if the match doesn't exist; throws 403 if the viewer isn't in it. */

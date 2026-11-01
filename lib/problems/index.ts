@@ -11,10 +11,6 @@ export function getProblem(id: string): Problem {
   return problem;
 }
 
-export function randomProblem(): Problem {
-  return problems[Math.floor(Math.random() * problems.length)];
-}
-
 export function starterCode(problem: Problem): string {
   return `function ${problem.functionName}(${problem.params.join(', ')}) {\n  // Your solution here\n}\n`;
 }

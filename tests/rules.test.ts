@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { expectedScore, ratingDeltas } from '@/lib/elo';
-import { decideByProgress, ratingWindow } from '@/lib/match/rules';
+import { chooseProblemId, decideByProgress, ratingWindow } from '@/lib/match/rules';
 
 describe('elo', () => {
   it('gives even odds to equal ratings', () => {
@@ -77,5 +77,45 @@ describe('decideByProgress (match timed out)', () => {
       { userId: 'b', passed: 7, createdAt: t(15) },
     ];
     expect(decideByProgress(attempts, players)).toBe('a');
+  });
+});
+
+describe('chooseProblemId', () => {
+  const ids = ['a', 'b', 'c', 'd'];
+  const at = (minutesAgo: number) => new Date(Date.now() - minutesAgo * 60_000);
+
+  it('spreads picks across the whole bank for new players', () => {
+    const seen = new Set<string>();
+    for (let i = 0; i < 200; i++) seen.add(chooseProblemId(ids, []));
+    expect([...seen].sort()).toEqual(ids);
+  });
+
+  it('never repeats a problem while unseen ones remain', () => {
+    const recent = [
+      { problemId: 'a', startedAt: at(1) },
+      { problemId: 'c', startedAt: at(5) },
+    ];
+    for (let i = 0; i < 100; i++) expect(['b', 'd']).toContain(chooseProblemId(ids, recent));
+  });
+
+  it('once everything was seen, picks from the least recently played half', () => {
+    const recent = [
+      { problemId: 'a', startedAt: at(1) },
+      { problemId: 'b', startedAt: at(40) },
+      { problemId: 'c', startedAt: at(2) },
+      { problemId: 'd', startedAt: at(30) },
+    ];
+    for (let i = 0; i < 100; i++) expect(['b', 'd']).toContain(chooseProblemId(ids, recent));
+  });
+
+  it('uses the most recent time a problem was played', () => {
+    const recent = [
+      { problemId: 'a', startedAt: at(100) },
+      { problemId: 'a', startedAt: at(1) },
+      { problemId: 'b', startedAt: at(50) },
+      { problemId: 'c', startedAt: at(60) },
+      { problemId: 'd', startedAt: at(70) },
+    ];
+    for (let i = 0; i < 100; i++) expect(['c', 'd']).toContain(chooseProblemId(ids, recent));
   });
 });

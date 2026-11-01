@@ -11,6 +11,29 @@ export function ratingWindow(waitedMs: number): number {
   return Math.min(100 + Math.floor(waitedMs / 5_000) * 50, 1_000);
 }
 
+/**
+ * Random problem, but one neither player has had recently. Problems they've
+ * never seen come first; once they've seen everything, pick from the half they
+ * saw longest ago, so repeats are as far apart as possible.
+ */
+export function chooseProblemId(
+  problemIds: string[],
+  recentMatches: Array<{ problemId: string; startedAt: Date }>,
+  random: () => number = Math.random,
+): string {
+  const lastSeen = new Map<string, number>();
+  for (const m of recentMatches) {
+    lastSeen.set(m.problemId, Math.max(lastSeen.get(m.problemId) ?? 0, m.startedAt.getTime()));
+  }
+  const unseen = problemIds.filter((id) => !lastSeen.has(id));
+  const pool = unseen.length
+    ? unseen
+    : [...problemIds]
+        .sort((a, b) => lastSeen.get(a)! - lastSeen.get(b)!)
+        .slice(0, Math.ceil(problemIds.length / 2));
+  return pool[Math.floor(random() * pool.length)];
+}
+
 interface Attempt {
   userId: string;
   passed: number;
