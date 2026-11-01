@@ -16,7 +16,8 @@
     "services:down": "docker compose down",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "tsx scripts/migrate.ts",
-    "db:studio": "drizzle-kit studio"
+    "db:studio": "drizzle-kit studio",
+    "ratelimit:reset": "tsx scripts/reset-rate-limits.ts"
   },
   "dependencies": {
     "@monaco-editor/react": "^4.7.0",

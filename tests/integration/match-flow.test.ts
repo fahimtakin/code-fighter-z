@@ -85,12 +85,18 @@ let alice: Client;
 let bob: Client;
 let carol: Client;
 
-beforeAll(async () => {
-  // Fresh rate-limit budget so repeated local runs don't trip the signup limit.
+// Every request in this suite comes from 127.0.0.1, the same IP as your own
+// browser. Clearing the counters before and after means a test run never
+// leaves you locked out of signing up locally.
+async function clearRateLimits() {
   const redis = new Redis(process.env.REDIS_URL ?? 'redis://localhost:6380');
-  const stale = await redis.keys('rl:*');
-  if (stale.length) await redis.del(...stale);
+  const keys = await redis.keys('rl:*');
+  if (keys.length) await redis.del(...keys);
   await redis.quit();
+}
+
+beforeAll(async () => {
+  await clearRateLimits();
 
   // Underscores in names broke the old room-id parsing; they must work now.
   alice = await signup(`t${suffix}_alice`);
@@ -101,8 +107,9 @@ beforeAll(async () => {
   carol.socket = await connect(carol);
 });
 
-afterAll(() => {
+afterAll(async () => {
   for (const c of [alice, bob, carol]) c?.socket?.close();
+  await clearRateLimits();
 });
 
 describe('auth', () => {

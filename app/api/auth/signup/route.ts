@@ -6,7 +6,9 @@ import { createUser } from '@/lib/users';
 import { signupSchema } from '@/lib/validation';
 
 export const POST = route(async (req) => {
-  await rateLimit(`signup:${clientIp(req)}`, 5, 60 * 60);
+  // Per IP, so it stops mass account creation. Generous enough for several
+  // people sharing one network (offices, campuses, home Wi-Fi).
+  await rateLimit(`signup:${clientIp(req)}`, 10, 60 * 60, 'sign-up attempts');
   const { username, password } = await parseBody(req, signupSchema);
 
   const user = await createUser(username, password);

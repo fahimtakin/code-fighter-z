@@ -215,7 +215,7 @@ export async function submitSolution(
   if (state.status !== 'active') throw new HttpError(409, 'This match is already over');
   if (Date.now() > state.endsAt) throw new HttpError(409, "Time's up");
 
-  await rateLimit(`judge:${userId}`, 12, 60);
+  await rateLimit(`judge:${userId}`, 12, 60, 'code runs');
 
   const problem = getProblem(state.problemId);
   const cases: JudgeCase[] = problem.examples.map((t) => ({ ...t, hidden: false }));

@@ -8,8 +8,8 @@ import { loginSchema } from '@/lib/validation';
 export const POST = route(async (req) => {
   const { username, password } = await parseBody(req, loginSchema);
   // Two limits: one per IP (spraying many accounts) and one per account (guessing one password).
-  await rateLimit(`login:ip:${clientIp(req)}`, 20, 60);
-  await rateLimit(`login:user:${username.toLowerCase()}`, 10, 5 * 60);
+  await rateLimit(`login:ip:${clientIp(req)}`, 20, 60, 'login attempts');
+  await rateLimit(`login:user:${username.toLowerCase()}`, 10, 5 * 60, 'login attempts for this account');
 
   const user = await verifyCredentials(username, password);
   // Same message for "no such user" and "wrong password", so usernames can't be probed.
