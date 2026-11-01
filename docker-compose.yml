@@ -1,50 +1,52 @@
-# docker-compose.yml
-version: "3.9"
-
+# Local development: `npm run services:up` starts Postgres and Redis.
+# Full stack in containers: `docker compose --profile app up --build`.
 services:
-  redis:
-    image: redis:alpine
+  postgres:
+    image: postgres:17-alpine
     restart: unless-stopped
+    environment:
+      POSTGRES_USER: codefighter
+      POSTGRES_PASSWORD: codefighter
+      POSTGRES_DB: codefighter
     ports:
-      - "6379:6379"
-    command: redis-server --save 60 1 --loglevel warning --appendonly yes
+      - "5433:5432"  # 5433 on the host so it never clashes with a locally installed Postgres
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U codefighter"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: redis-server --appendonly yes --loglevel warning
+    ports:
+      - "6380:6379"  # 6380 on the host so it never clashes with a local or WSL Redis
     volumes:
       - redis-data:/data
-    networks:
-      - codefighter-net
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
 
-  redis-commander:         # GUI
-    image: rediscommander/redis-commander:latest
-    environment:
-      - REDIS_HOSTS=local:redis:6379
-    ports:
-      - "8081:8081"
-    depends_on:
-      - redis
-    networks:
-      - codefighter-net
-
-  app:                       # Your Next.js app — runs exactly like npm run dev
-    image: node:20-alpine
-    working_dir: /app
-    volumes:
-      - .:/app                 # Live code sync (edit → instant reload)
-      - /app/node_modules      # Prevent host node_modules conflict
+  app:
+    profiles: ["app"]
+    build: .
     ports:
       - "3000:3000"
     environment:
-      - NODE_ENV=development
-      - REDIS_URL=redis://redis:6379   # Works perfectly inside Docker network
-      - JWT_SECRET=${JWT_SECRET}
-    command: sh -c "npm install && npm run dev"
+      DATABASE_URL: postgres://codefighter:codefighter@postgres:5432/codefighter
+      REDIS_URL: redis://redis:6379
+      JWT_SECRET: ${JWT_SECRET:-}  # the app refuses to start without a 32+ char secret
     depends_on:
-      - redis
-    networks:
-      - codefighter-net
-
-networks:
-  codefighter-net:
-    driver: bridge
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
 
 volumes:
+  postgres-data:
   redis-data:
