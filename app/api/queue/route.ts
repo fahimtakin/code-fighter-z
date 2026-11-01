@@ -1,14 +1,13 @@
-// app/api/queue/route.ts  ← REPLACE YOUR FILE WITH THIS EXACT CODE
 import { NextRequest, NextResponse } from 'next/server';
 import jwt from 'jsonwebtoken';
 import { getRedis } from '@/lib/redis';
 
-const SECRET = process.env.JWT_SECRET!;
-const QUEUE_KEY = 'cfz_queue';  // ← MUST BE SAME IN POST AND DELETE
+const SECRET = process.env.JWT_SECRET || 'fallback-secret-change-me';
+const QUEUE_KEY = 'cfz_queue';
 
 export async function POST(req: NextRequest) {
   try {
-    const token = req.headers.get('authorization')?.split(' ')[1];
+    const token = req.cookies.get('auth-token')?.value;
     if (!token) return NextResponse.json({ error: 'No token' }, { status: 401 });
 
     let username: string;
@@ -21,43 +20,69 @@ export async function POST(req: NextRequest) {
 
     const redis = getRedis();
 
-    // 1. Check if already matched
-    const existing = await redis.get(`player:${username}:room`);
-    if (existing) {
-      return NextResponse.json({ status: 'matched', roomId: existing });
+    // 1. Check for historical active room allocations
+    const existingRoom = await redis.get(`player:${username}:room`);
+    if (existingRoom) {
+      // Check if this historical room has already been finalized by a winner
+      const matchWinner = await redis.get(`winner:${existingRoom}`);
+      if (matchWinner) {
+        // Self-heal: Clean up the dead room mapping since the match is over
+        await redis.del(`player:${username}:room`);
+      } else {
+        // The match is truly active and still running, return the room link
+        return NextResponse.json({ status: 'matched', roomId: existingRoom });
+      }
     }
 
-    // 2. Try to match with someone in queue
-    const opponent = await redis.lpop(QUEUE_KEY);  // ← THIS MUST WORK
+    // 2. Clear out any duplicate listings of this user sitting inside the queue array
+    await redis.lrem(QUEUE_KEY, 0, username);
 
-    if (opponent && opponent !== username) {
-      const roomId = `battle_${Date.now()}_${[username, opponent].sort().join('_')}`;
+    // 3. Attempt to match with an available waiting candidate
+    const opponent = await redis.lpop(QUEUE_KEY);
 
-      // Set room for both players
-      await redis.set(`player:${username}:room`, roomId);
-      await redis.set(`player:${opponent}:room`, roomId);
+    if (opponent) {
+      // Prevent pairing loops with yourself due to race conditions or multi-clicks
+      if (opponent === username) {
+        await redis.rpush(QUEUE_KEY, username);
+        return NextResponse.json({ status: 'waiting' });
+      }
 
-      console.log(`MATCHED: ${username} vs ${opponent} → ${roomId}`);
+const roomId = `battle_${Date.now()}_${[username, opponent].sort().join('_')}`;
+const matchStartTime = Math.floor(Date.now() / 1000).toString();
 
-      return NextResponse.json({ status: 'matched', roomId });
+const pipeline = redis.pipeline();
+
+// Store the room mapping for both players
+pipeline.mset({
+  [`player:${username}:room`]: roomId,
+  [`player:${opponent}:room`]: roomId
+});
+
+// Record the definitive server-side match initialization timestamp
+pipeline.set(`match:${roomId}:start_time`, matchStartTime, 'EX', 3600);
+
+await pipeline.exec();
+
+const matchPayload = { player1: username, player2: opponent, roomId };
+await redis.publish('matches', JSON.stringify(matchPayload));
+
+return NextResponse.json({ status: 'matched', roomId });
     }
 
-    // 3. No match → add to queue (RPUSH = right push = FIFO)
+    // 4. No candidate found -> append username to the queue list structure
     await redis.rpush(QUEUE_KEY, username);
     await redis.expire(QUEUE_KEY, 300);
 
-    console.log(`Added to queue: ${username} | Queue length: ${await redis.llen(QUEUE_KEY)}`);
-
     return NextResponse.json({ status: 'waiting' });
-  } catch (err: any) {
-    console.error('Queue POST error:', err);
-    return NextResponse.json({ error: 'Server error' }, { status: 500 });
+  } catch (err) {
+    console.error('Queue POST engine loop error:', err);
+    return NextResponse.json({ error: 'Internal system communication failure' }, { status: 500 });
   }
 }
 
 export async function DELETE(req: NextRequest) {
   try {
-    const token = req.headers.get('authorization')?.split(' ')[1];
+    const token = req.cookies.get('auth-token')?.value;
     if (!token) return NextResponse.json({ success: false });
 
     let username: string;
@@ -70,19 +95,12 @@ export async function DELETE(req: NextRequest) {
 
     const redis = getRedis();
 
-    // Remove from queue — MUST use same key!
+    // Pull user out of matching pool arrays
     await redis.lrem(QUEUE_KEY, 0, username);
-
-    // Clean up room
-    const room = await redis.get(`player:${username}:room`);
-    if (room) {
-      await redis.srem(room, username);
-      await redis.del(`player:${username}:room`);
-    }
 
     return NextResponse.json({ success: true });
   } catch (err) {
-    console.error('Queue DELETE error:', err);
+    console.error('Queue DELETE processing error:', err);
     return NextResponse.json({ success: false });
   }
 }

@@ -1,6 +1,9 @@
 // src/lib/redis.ts
 import Redis from 'ioredis';
 
+
+
+
 // Prevent multiple instances in dev (hot reload)
 declare global {
   var redis: Redis | undefined;
