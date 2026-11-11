@@ -289,3 +289,79 @@ describe('timeout', () => {
     expect(result).toMatchObject({ outcome: 'draw', winnerId: null });
   });
 });
+
+describe('race conditions', () => {
+  const racers: Client[] = [];
+  let matchOf: Map<Client, string>;
+
+  beforeAll(async () => {
+    // Signup is limited per IP; the suite has already used some of the budget.
+    await clearRateLimits();
+    for (const n of [1, 2, 3, 4]) racers.push(await signup(`t${suffix}_race${n}`));
+    for (const c of racers) c.socket = await connect(c);
+  });
+
+  afterAll(() => {
+    for (const c of racers) c.socket?.close();
+  });
+
+  it('nobody gets matched twice when four players queue at the same moment', async () => {
+    const replies = await Promise.all(racers.map((c) => call<QueueStatus>(c, '/api/queue', { method: 'POST' })));
+    const statuses = replies.map((r) => r.body.status);
+    expect(statuses.filter((s) => s === 'matched')).toHaveLength(2);
+    expect(statuses.filter((s) => s === 'waiting')).toHaveLength(2);
+
+    // The two who were waiting poll once more and learn which match they're in.
+    const final = await Promise.all(
+      racers.map(async (c, i) =>
+        replies[i].body.status === 'matched' ? replies[i] : call<QueueStatus>(c, '/api/queue', { method: 'POST' }),
+      ),
+    );
+    matchOf = new Map();
+    for (const [i, r] of final.entries()) {
+      expect(r.body.status).toBe('matched');
+      matchOf.set(racers[i], (r.body as { matchId: string }).matchId);
+    }
+
+    const byMatch = new Map<string, Client[]>();
+    for (const [c, id] of matchOf) byMatch.set(id, [...(byMatch.get(id) ?? []), c]);
+    expect(byMatch.size).toBe(2);
+    for (const players of byMatch.values()) expect(players).toHaveLength(2);
+
+    for (const [id, [a, b]] of byMatch) {
+      const viewA = await call<MatchView>(a, `/api/match/${id}`);
+      const viewB = await call<MatchView>(b, `/api/match/${id}`);
+      expect(viewA.body).toMatchObject({ you: { username: a.name }, opponent: { username: b.name } });
+      expect(viewB.body).toMatchObject({ you: { username: b.name }, opponent: { username: a.name } });
+    }
+  });
+
+  it('a match ends exactly once when both players solve it at the same moment', async () => {
+    const [a] = racers;
+    const matchId = matchOf.get(a)!;
+    const b = racers.find((c) => c !== a && matchOf.get(c) === matchId)!;
+    const view = (await call<MatchView>(a, `/api/match/${matchId}`)).body;
+    const code = referenceSolutions[view.problem.id];
+
+    const [resA, resB] = await Promise.all(
+      [a, b].map((c) => call<SubmitResponse>(c, `/api/match/${matchId}/submit`, { method: 'POST', json: { code, mode: 'submit' } })),
+    );
+    const winners = [resA, resB].filter((r) => r.status === 200 && r.body.won === true);
+    expect(winners).toHaveLength(1);
+    const loserRes = winners[0] === resA ? resB : resA;
+    if (loserRes.status === 200) expect(loserRes.body).toMatchObject({ matchOver: true, won: false });
+    else expect(loserRes.status).toBe(409);
+
+    const [winner, loser] = winners[0] === resA ? [a, b] : [b, a];
+    const after = (await call<MatchView>(winner, `/api/match/${matchId}`)).body;
+    expect(after.result).toMatchObject({ outcome: 'solved', winnerId: after.you.id });
+    expect(after.result!.ratingDeltas[after.you.id]).toBe(16);
+    expect(after.result!.ratingDeltas[after.opponent.id]).toBe(-16);
+
+    // A new match snapshots current ratings: proof the swing was applied once, not twice.
+    const rematchId = await pair(winner, loser);
+    const rematch = (await call<MatchView>(winner, `/api/match/${rematchId}`)).body;
+    expect(rematch.you.rating).toBe(1216);
+    expect(rematch.opponent.rating).toBe(1184);
+  });
+});
